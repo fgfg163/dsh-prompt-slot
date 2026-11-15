@@ -13,6 +13,8 @@
         # 'before' puts the injected block immediately ahead of this turn's
         # user prompt (OpenClaw's prependContext shape); 'after' appends it
         # behind everything else, matching time-context and agentmemory.
+        # Both fields are .volatile() in lib/config.js: editable live from
+        # Settings → 提示注入槽, without restarting the plugin.
         position: before
         # Hard ceiling for the joined body of one injection.
         totalMaxChars: 8000

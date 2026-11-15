@@ -1,11 +1,15 @@
 {
   "name": "@fgfg163/dsh-prompt-slot",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "A shared per-turn injection slot for DeepSeek Harness: plugins register dynamic context that reaches the model without invalidating the provider prefix cache, either appended to the turn (logged) or woven into the outbound request only (unlogged).",
   "type": "module",
   "main": "./lib/index.js",
+  "dependencies": {
+    "@deepseek-ai/schemastery": "^3.19.0"
+  },
   "exports": {
     ".": "./lib/index.js",
+    "./client": "./lib/client.js",
     "./cordis.patch.yml": "./cordis.patch.yml",
     "./package.json": "./package.json"
   },
@@ -19,6 +23,10 @@
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": ["@deepseek-ai/dsh-client-ui-settings"]
     }
   },
   "keywords": [

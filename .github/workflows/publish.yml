@@ -79,7 +79,7 @@ jobs:
           set -euo pipefail
           test -f lib/index.js
 
-          grep -q 'export { apply, inject, name }' lib/index.js \
+          grep -q 'export { apply, Config, inject, name }' lib/index.js \
             || { echo "::error::plugin export shape changed"; exit 1; }
 
           # ctx.provide('promptInject', ...) is the API other plugins depend on.
@@ -101,6 +101,11 @@ jobs:
           wc -c lib/index.js
 
           echo "source checks passed"
+
+      # lib/config.js imports @deepseek-ai/schemastery; a fresh runner has no
+      # node_modules, so install the declared dependency before the tests.
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
 
       - name: Run the tests
         run: node --test test/index.test.js
