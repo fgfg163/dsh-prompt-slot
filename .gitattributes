@@ -1,0 +1,32 @@
+# Default: let git normalize text files, but keep this file itself LF so the
+# rules do not depend on how it happens to be checked out.
+* text=auto
+
+# Shell scripts must keep LF even on a Windows checkout with core.autocrlf=true,
+# or the runner fails with "\r: command not found" and the cause is invisible.
+*.sh   text eol=lf
+*.bash text eol=lf
+.gitattributes text eol=lf
+
+# Workflow YAML is interpreted by the runner, not by Windows tooling. Keep it LF.
+*.yml  text eol=lf
+*.yaml text eol=lf
+
+# The plugin runs on Linux, macOS and Windows hosts. Normalising source to LF
+# keeps a Windows checkout from rewriting every line and turning a one-line
+# change into a whole-file diff.
+*.js   text eol=lf
+*.mjs  text eol=lf
+*.json text eol=lf
+*.md   text eol=lf
+
+# Shell scripts embedded in the repo, including any under .github.
+.github/** text eol=lf
+
+# Windows-only scripts are the exception: cmd/PowerShell expect CRLF.
+*.ps1  text eol=crlf
+*.cmd  text eol=crlf
+*.bat  text eol=crlf
+
+# Never touch binary or generated artifacts.
+*.tgz  binary

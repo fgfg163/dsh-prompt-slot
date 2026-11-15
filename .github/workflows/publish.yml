@@ -1,0 +1,188 @@
+name: publish
+
+# Publishes @fgfg163/dsh-prompt-slot to npm via Trusted Publishing (OIDC).
+#
+# No NPM_TOKEN secret is used, and none should be added. The workflow asks
+# GitHub for a short-lived OIDC token, npm exchanges it for publish rights, and
+# the registry verifies that the request really came from this workflow in this
+# repository. Nothing long-lived is stored anywhere.
+#
+# Prerequisites on npmjs.com (package -> Settings -> Trusted publishing):
+#   Provider    GitHub Actions
+#   User        fgfg163
+#   Repository  dsh-prompt-slot
+#   Workflow    publish.yml
+#
+# The *first* release of a package name has to go out by hand: npm only lets you
+# configure a trusted publisher for a package that already exists. Every release
+# after that can come from here.
+#
+# Trigger: publish a GitHub Release (deliberate, one click), or run this workflow
+# manually. A bare `git push --tags` does not publish.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Run npm publish --dry-run only, do not touch the registry
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  # Required for OIDC. Without this, npm cannot obtain an identity token and the
+  # publish fails with a 403 asking for 2FA or a bypass-2FA token.
+  id-token: write
+
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          registry-url: 'https://registry.npmjs.org'
+
+      # Node 24 already ships an npm that speaks OIDC, but the floor is pinned
+      # explicitly so a runner image change cannot silently regress it.
+      - name: Ensure npm supports OIDC trusted publishing
+        run: |
+          set -euo pipefail
+          npm install -g npm@latest
+          v=$(npm --version)
+          echo "npm $v"
+          node -e "
+            const p = '$v'.split('.').map(Number);
+            const ok = p[0] > 11 || (p[0] === 11 && (p[1] > 5 || (p[1] === 5 && p[2] >= 1)));
+            if (!ok) {
+              console.error('npm ' + p.join('.') + ' is below 11.5.1; OIDC trusted publishing needs >= 11.5.1');
+              process.exit(1);
+            }
+          "
+
+      # This is hand-written source, not a build artifact. The checks below are
+      # the things that would silently break every consumer if they drifted:
+      # the exported shape, the service name other plugins inject on, and the
+      # two channel names the whole design rests on.
+      - name: Verify the plugin source
+        run: |
+          set -euo pipefail
+          test -f lib/index.js
+
+          grep -q 'export { apply, inject, name }' lib/index.js \
+            || { echo "::error::plugin export shape changed"; exit 1; }
+
+          # ctx.provide('promptInject', ...) is the API other plugins depend on.
+          # Renaming the package must NOT rename this.
+          grep -q "ctx.provide('promptInject'" lib/index.js \
+            || { echo "::error::ctx.promptInject service registration is missing or renamed"; exit 1; }
+
+          grep -q "const CHANNELS = \['pre-step', 'request'\]" lib/index.js \
+            || { echo "::error::channel list changed"; exit 1; }
+
+          grep -q "const name = 'fgfg163-prompt-slot'" lib/index.js \
+            || { echo "::error::plugin name does not match the published package namespace"; exit 1; }
+
+          # The bundle patch must point at the scoped name, or the loader row
+          # resolves to nothing.
+          grep -q "name: '@fgfg163/dsh-prompt-slot'" cordis.patch.yml \
+            || { echo "::error::cordis.patch.yml row name does not match the package name"; exit 1; }
+
+          wc -c lib/index.js
+
+          echo "source checks passed"
+
+      - name: Run the tests
+        run: node --test test/index.test.js
+
+      - name: Check version matches the release tag
+        if: github.event_name == 'release'
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME#v}"
+          ver=$(node -p "require('./package.json').version")
+          if [ "$tag" != "$ver" ]; then
+            echo "::error::release tag $GITHUB_REF_NAME does not match package.json version $ver"
+            exit 1
+          fi
+          echo "tag $GITHUB_REF_NAME matches package.json $ver"
+
+      # A re-run of this workflow on a commit whose version is already on the
+      # registry cannot succeed, and npm says so only after packing the tarball.
+      # Fail early and say which version is the problem.
+      - name: Fail early if this version already exists
+        run: |
+          set -euo pipefail
+          ver=$(node -p "require('./package.json').version")
+          if npm view "@fgfg163/dsh-prompt-slot@$ver" version > /dev/null 2>&1; then
+            echo "::error::$ver is already on the registry. Bump the version in package.json, commit, and run again."
+            npm view "@fgfg163/dsh-prompt-slot@$ver" version dist.tarball
+            exit 1
+          fi
+          echo "$ver is not on the registry yet, continuing"
+
+      - name: Publish
+        env:
+          # Must be empty. setup-node writes an .npmrc pointing at this variable;
+          # if it holds any value npm tries token auth first and never attempts
+          # the OIDC exchange, ending in a 403.
+          NODE_AUTH_TOKEN: ''
+        run: |
+          set -euo pipefail
+          if [ "${{ inputs.dry_run }}" = "true" ]; then
+            echo "dry run requested, not touching the registry"
+            npm publish --access public --dry-run
+          else
+            npm publish --access public --provenance
+          fi
+
+      - name: Confirm what landed on the registry
+        if: github.event_name == 'release' || inputs.dry_run != true
+        run: |
+          set -euo pipefail
+          ver=$(node -p "require('./package.json').version")
+          pkg='@fgfg163/dsh-prompt-slot'
+
+          # Poll the registry HTTP API directly rather than `npm view`, which
+          # serves from its own cache and can report "missing" long after the
+          # version is live. The `?t=` parameter keeps the CDN from answering
+          # with a stale packument.
+          #
+          # The body is read with curl and parsed from stdin, not handed to node
+          # via a temp path: on Git Bash for Windows `/tmp` resolves differently
+          # for bash and for node, and that mismatch is invisible until it fails.
+          echo "waiting for $ver to appear on the registry (up to 5 min)"
+          for i in $(seq 1 60); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' \
+              "https://registry.npmjs.org/${pkg//\//%2f}/$ver?t=$(date +%s)" || true)
+            if [ "$code" = "200" ]; then
+              echo "confirmed: $ver is live (attempt $i)"
+              curl -s "https://registry.npmjs.org/${pkg//\//%2f}/$ver?t=$(date +%s)" | node -e "
+                let s = '';
+                process.stdin.on('data', c => s += c).on('end', () => {
+                  const d = JSON.parse(s);
+                  console.log('  version     :', d.version);
+                  console.log('  tarball     :', d.dist.tarball);
+                  console.log('  shasum      :', d.dist.shasum);
+                  console.log('  integrity   :', d.dist.integrity);
+                  console.log('  attestations:', d.dist.attestations ? 'present' : 'MISSING');
+                  if (!d.dist.attestations) process.exitCode = 1;
+                });
+              "
+              exit 0
+            fi
+            echo "  attempt $i/60: HTTP $code, retrying in 5s"
+            sleep 5
+          done
+          echo "::error::$ver did not show up on the registry within 5 min"
+          exit 1

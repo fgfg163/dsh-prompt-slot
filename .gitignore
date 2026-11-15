@@ -1,0 +1,8 @@
+node_modules/
+*.log
+.DS_Store
+Thumbs.db
+
+# Local scratch output from test runs.
+coverage/
+.nyc_output/

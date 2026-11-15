@@ -1,0 +1,18 @@
+# @fgfg163/dsh-prompt-slot bundle patch.
+#
+# The npm package name and the loader row `name` must match: the loader
+# resolves this row with `import()`.
+#
+# Row id `fgfg163-prompt-slot` is the handle other patches/plugins target to
+# change the process-wide budget or placement. It is namespaced with the author
+# so it cannot collide with anyone else's row.
+- insert:
+    - id: fgfg163-prompt-slot
+      name: '@fgfg163/dsh-prompt-slot'
+      config:
+        # 'before' puts the injected block immediately ahead of this turn's
+        # user prompt (OpenClaw's prependContext shape); 'after' appends it
+        # behind everything else, matching time-context and agentmemory.
+        position: before
+        # Hard ceiling for the joined body of one injection.
+        totalMaxChars: 8000
