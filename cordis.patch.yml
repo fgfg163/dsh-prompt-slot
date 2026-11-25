@@ -4,17 +4,16 @@
 # resolves this row with `import()`.
 #
 # Row id `fgfg163-prompt-slot` is the handle other patches/plugins target to
-# change the process-wide budget or placement. It is namespaced with the author
-# so it cannot collide with anyone else's row.
+# change the process-wide budget. It is namespaced with the author so it cannot
+# collide with anyone else's row.
+#
+# `position` is gone (0.3.0). Placement is chosen per slot by the contributor
+# (`registerBefore()` / `registerAfter()`), not by a process-wide switch.
+#
+# `totalMaxChars` is intentionally **absent** (0.3.1): no total ceiling by
+# default. Only per-slot `maxChars` applies. To impose one, add a positive
+# integer here or fill the field in Settings → 提示注入槽.
 - insert:
     - id: fgfg163-prompt-slot
       name: '@fgfg163/dsh-prompt-slot'
-      config:
-        # 'before' puts the injected block immediately ahead of this turn's
-        # user prompt (OpenClaw's prependContext shape); 'after' appends it
-        # behind everything else, matching time-context and agentmemory.
-        # Both fields are .volatile() in lib/config.js: editable live from
-        # Settings → 提示注入槽, without restarting the plugin.
-        position: before
-        # Hard ceiling for the joined body of one injection.
-        totalMaxChars: 8000
+      config: {}

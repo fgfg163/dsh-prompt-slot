@@ -1,7 +1,7 @@
 {
   "name": "@fgfg163/dsh-prompt-slot",
-  "version": "0.2.0",
-  "description": "A shared per-turn injection slot for DeepSeek Harness: plugins register dynamic context that reaches the model without invalidating the provider prefix cache, either appended to the turn (logged) or woven into the outbound request only (unlogged).",
+  "version": "0.3.1",
+  "description": "A shared per-turn injection slot for DeepSeek Harness: plugins register dynamic context that reaches the model without invalidating the provider prefix cache. Two placements (registerBefore / registerAfter) and two channels (appended to the turn and logged, or woven into the outbound request only and unlogged).",
   "type": "module",
   "main": "./lib/index.js",
   "dependencies": {

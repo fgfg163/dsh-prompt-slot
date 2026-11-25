@@ -100,9 +100,9 @@ test('registers the slot service and prepends the listener', () => {
 
 test('injects registered slot text ahead of the user prompt', async () => {
   const harness = makeCtx()
-  applySlot(harness.ctx, { position: 'before' })
+  applySlot(harness.ctx, {})
   const service = harness.services.get('promptInject')
-  service.register({ id: 'test:hello', render: () => 'slot body' })
+  service.registerBefore({ id: 'test:hello', render: () => 'slot body' })
 
   const base = decision()
   const out = await preStep(harness, { agent: { session: fakeSession() }, turn: 1, step: 1, signal: new AbortController().signal }, base)
@@ -113,10 +113,10 @@ test('injects registered slot text ahead of the user prompt', async () => {
   assert.equal(out.messages[1], base.messages[0])
 })
 
-test('position "after" appends behind existing messages', async () => {
+test('registerAfter appends behind existing messages', async () => {
   const harness = makeCtx()
-  applySlot(harness.ctx, { position: 'after' })
-  harness.services.get('promptInject').register({ id: 'test:hello', render: () => 'slot body' })
+  applySlot(harness.ctx, {})
+  harness.services.get('promptInject').registerAfter({ id: 'test:hello', render: () => 'slot body' })
 
   const base = decision()
   const out = await preStep(harness, { agent: { session: fakeSession() }, turn: 1, step: 1, signal: new AbortController().signal }, base)
@@ -125,10 +125,85 @@ test('position "after" appends behind existing messages', async () => {
   assert.equal(out.messages[0], base.messages[0])
 })
 
+test('before and after slot land as two separate messages in one step', async () => {
+  const harness = makeCtx()
+  applySlot(harness.ctx, {})
+  const service = harness.services.get('promptInject')
+  service.registerBefore({ id: 'test:pre', render: () => 'pre body' })
+  service.registerAfter({ id: 'test:post', render: () => 'post body' })
+
+  const base = decision()
+  const out = await preStep(harness, { agent: { session: fakeSession() }, turn: 1, step: 1, signal: new AbortController().signal }, base)
+
+  assert.equal(out.messages.length, 3)
+  assert.equal(out.messages[0].content[0].text, 'pre body')
+  assert.equal(out.messages[0].source.placement, 'before')
+  assert.equal(out.messages[1], base.messages[0])
+  assert.equal(out.messages[2].content[0].text, 'post body')
+  assert.equal(out.messages[2].source.placement, 'after')
+})
+
+test('the two placements have independent budgets', async () => {
+  const harness = makeCtx()
+  applySlot(harness.ctx, { totalMaxChars: 40 })
+  const service = harness.services.get('promptInject')
+  service.registerBefore({ id: 'pre:keep', render: () => 'p'.repeat(30) })
+  service.registerAfter({ id: 'post:keep', render: () => 'a'.repeat(30) })
+
+  const out = await preStep(harness, { agent: { session: fakeSession() }, turn: 1, step: 1, signal: new AbortController().signal }, decision())
+
+  assert.equal(out.messages.length, 3, 'neither placement may evict the other')
+  assert.equal(out.messages[0].content[0].text, 'p'.repeat(30))
+  assert.equal(out.messages[2].content[0].text, 'a'.repeat(30))
+})
+
+test('each placement dedups on its own body', async () => {
+  const harness = makeCtx()
+  applySlot(harness.ctx, {})
+  const service = harness.services.get('promptInject')
+  const session = fakeSession()
+  let pre = 'pre body'
+  let post = 'post body'
+  service.registerBefore({ id: 'test:pre', render: () => pre })
+  service.registerAfter({ id: 'test:post', render: () => post })
+
+  const payload = { agent: { session }, turn: 1, step: 1, signal: new AbortController().signal }
+  const first = await preStep(harness, payload, decision())
+  assert.equal(first.messages.length, 3)
+  for (const message of first.messages.filter((entry) => entry.source?.kind === 'fgfg163-prompt-slot')) {
+    harness.ctx.sessionProjections.fold(session, 'promptInject', { type: 'user/message', data: message })
+  }
+
+  // Both unchanged: nothing new.
+  const same = await preStep(harness, payload, decision())
+  assert.equal(same.messages.length, 1)
+
+  // Only "after" changed: exactly one message comes back, and it is the after one.
+  post = 'post body v2'
+  const changed = await preStep(harness, payload, decision())
+  assert.equal(changed.messages.length, 2)
+  assert.equal(changed.messages[1].content[0].text, 'post body v2')
+  assert.equal(changed.messages[1].source.placement, 'after')
+})
+
+test('a version-1 projection row is migrated to the two-placement shape', () => {
+  const harness = makeCtx()
+  applySlot(harness.ctx, {})
+  const definition = harness.registrations.get('promptInject')
+  assert.equal(definition.stateVersion, 2)
+
+  // What an upgraded install carries over from 0.2.0: { turn, body }.
+  assert.deepEqual(definition.stateSchema.parse({ turn: 3, body: 'stable' }), { turn: 3, before: 'stable', after: '' })
+  // The current shape round-trips untouched.
+  assert.deepEqual(definition.stateSchema.parse({ turn: 4, before: 'p', after: 'a' }), { turn: 4, before: 'p', after: 'a' })
+  // A malformed row is refused rather than silently accepted.
+  assert.throws(() => definition.stateSchema.parse({ turn: 'x' }), /malformed/)
+})
+
 test('runtime-context snapshots are not displaced from the anchor', async () => {
   const harness = makeCtx()
-  applySlot(harness.ctx, { position: 'before' })
-  harness.services.get('promptInject').register({ id: 'test:hello', render: () => 'slot body' })
+  applySlot(harness.ctx, {})
+  harness.services.get('promptInject').registerBefore({ id: 'test:hello', render: () => 'slot body' })
 
   const base = decision({
     messages: [
@@ -253,6 +328,66 @@ test('a budget too small for the full marker degrades instead of overrunning', a
   assert.match(text, /\[truncated\]$/)
 })
 
+test('a null config (comment-only patch block) still mounts', () => {
+  const harness = makeCtx()
+  applySlot(harness.ctx, null)
+  assert.ok(harness.services.has('promptInject'), 'a null config must fall back to defaults, not throw')
+})
+
+test('an empty config object means unlimited', async () => {
+  const harness = makeCtx()
+  applySlot(harness.ctx, {})
+  harness.services.get('promptInject').register({ id: 'big', maxChars: 100000, render: () => 'x'.repeat(20000) })
+  const out = await preStep(harness, { agent: { session: fakeSession() }, turn: 1, step: 1, signal: new AbortController().signal }, decision())
+  assert.equal(out.messages.length, 2)
+  assert.equal(out.messages[0].content[0].text.length, 20000)
+})
+
+test('no totalMaxChars means unlimited', async () => {
+  const harness = makeCtx()
+  applySlot(harness.ctx, {})
+  const service = harness.services.get('promptInject')
+  // Well past the old 8000 default: with no ceiling configured everything stays.
+  service.register({ id: 'huge', maxChars: 100000, render: () => 'x'.repeat(40000) })
+  service.register({ id: 'keep', priority: 900, render: () => 'tail' })
+
+  const out = await preStep(harness, { agent: { session: fakeSession() }, turn: 1, step: 1, signal: new AbortController().signal }, decision())
+  const text = out.messages[0].content[0].text
+  assert.equal(text.length, 40000 + '\n\n'.length + 4, 'nothing may be evicted without a ceiling')
+  assert.deepEqual(out.messages[0].source.sections.map((section) => section.name), ['huge', 'keep'])
+  assert.equal(harness.warnings.length, 0, 'no budget warning when unlimited')
+})
+
+test('an explicit totalMaxChars still evicts', async () => {
+  const harness = makeCtx()
+  applySlot(harness.ctx, { totalMaxChars: 40 })
+  harness.services.get('promptInject').register({ id: 'big', render: () => 'x'.repeat(100) })
+  const out = await preStep(harness, { agent: { session: fakeSession() }, turn: 1, step: 1, signal: new AbortController().signal }, decision())
+  assert.equal(out.messages.length, 1, 'the only slot over budget is dropped')
+  assert.ok(harness.warnings.some((warning) => warning.includes('budget 40 dropped big')))
+})
+
+test('zero or negative totalMaxChars is rejected, not read as unlimited', () => {
+  assert.throws(() => applySlot(makeCtx().ctx, { totalMaxChars: 0 }), /positive integer or left empty/)
+  assert.throws(() => applySlot(makeCtx().ctx, { totalMaxChars: -5 }), /positive integer or left empty/)
+  assert.throws(() => applySlot(makeCtx().ctx, { totalMaxChars: 12.5 }), /positive integer or left empty/)
+})
+
+test('a live reference cleared to null becomes unlimited', async () => {
+  const harness = makeCtx()
+  let current = 40
+  applySlot(harness.ctx, { totalMaxChars: { get: () => current } })
+  harness.services.get('promptInject').register({ id: 'big', render: () => 'x'.repeat(100) })
+
+  const payload = { agent: { session: fakeSession() }, turn: 1, step: 1, signal: new AbortController().signal }
+  const limited = await preStep(harness, payload, decision())
+  assert.equal(limited.messages.length, 1, 'a configured budget evicts')
+
+  current = null
+  const unlimited = await preStep(harness, payload, decision())
+  assert.equal(unlimited.messages.length, 2, 'clearing the budget lets everything through')
+})
+
 test('the total budget drops the lowest-priority slot first', async () => {
   const harness = makeCtx()
   applySlot(harness.ctx, { totalMaxChars: 40 })
@@ -343,8 +478,24 @@ test('no slots means no work', async () => {
 })
 
 test('rejects an invalid configuration', () => {
-  assert.throws(() => applySlot(makeCtx().ctx, { position: 'sideways' }), /position must be/)
   assert.throws(() => applySlot(makeCtx().ctx, { totalMaxChars: 0 }), /totalMaxChars must be/)
+})
+
+test('rejects an unknown placement', () => {
+  const harness = makeCtx()
+  applySlot(harness.ctx, {})
+  assert.throws(
+    () => harness.services.get('promptInject').register({ id: 'bad', placement: 'sideways', render: () => 'x' }),
+    /placement must be/,
+  )
+})
+
+test('registerBefore/registerAfter refuse a contradicting placement', () => {
+  const harness = makeCtx()
+  applySlot(harness.ctx, {})
+  const service = harness.services.get('promptInject')
+  assert.throws(() => service.registerAfter({ id: 'x', placement: 'before', render: () => 'x' }), /declares placement/)
+  assert.throws(() => service.registerBefore({ id: 'y', placement: 'after', render: () => 'y' }), /declares placement/)
 })
 
 test('an already-provided service is reported, not thrown', () => {
@@ -435,6 +586,23 @@ test('request text is woven in ahead of this turn user prompt', async () => {
   assert.equal(sent[1].source, undefined, 'request-only shape carries no source')
   assert.equal(sent[2].content[0].text, 'now', 'the real prompt stays after the block')
   assert.equal(sent[3].content[0].text, 'facts', 'runtime-context stays last')
+})
+
+test('registerAfter on the request channel appends at the tail', async () => {
+  const harness = makeCtx()
+  applySlot(harness.ctx, {})
+  const calls = attachLlm(harness)
+  harness.services.get('promptInject').registerAfter({ id: 'req:tail', channel: 'request', render: () => 'tail' })
+
+  await preStep(harness, { agent: { session: fakeSession() }, turn: 1, step: 1, signal: new AbortController().signal }, decision())
+
+  const request = { sessionId: 'session-1', messages: [{ id: 'b', role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text: 'now' }] }] }
+  await streamOnce(harness, request)
+
+  const sent = calls[0].messages
+  assert.equal(sent.length, 2)
+  assert.equal(sent[1].content[0].text, 'tail')
+  assert.equal(sent[0].content[0].text, 'now', 'an "after" block never moves the user prompt')
 })
 
 test('the block lands once per turn, not once per step', async () => {

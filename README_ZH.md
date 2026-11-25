@@ -30,7 +30,8 @@ DSH 有四个能往模型可见历史里放文字的地方，缓存代价差一�
 
 - 提供 `ctx.promptInject` 服务，任何插件都能注册一个 slot
 - **两条通道**：`channel: 'pre-step'` 追加进会话历史（默认）；`channel: 'request'` 只进发给模型的请求，**不写日志**
-- 每轮第一步，把已注册 slot 的文本合成**一条** user 消息
+- **两个位置，注册时决定**：`registerBefore()` 放在本轮用户提问之前，`registerAfter()` 追加在所有消息之后。两个位置各自成一条消息、各自一份预算
+- 每轮第一步，把同一位置的 slot 文本合成**一条** user 消息（因此一轮最多两条注入消息，前后各一）
 - 与持久 session projection 比对，**同一轮同样内容不重复注入**（恢复会话也成立）
 - 严格预算：单 slot 上限 + 总量上限，超了按优先级淘汰
 - 渲染有超时，坏 slot 跳过并记日志，**绝不让一轮对话卡死**
@@ -60,9 +61,7 @@ DSH 有四个能往模型可见历史里放文字的地方，缓存代价差一�
 - insert:
     - id: fgfg163-prompt-slot
       name: '@fgfg163/dsh-prompt-slot'
-      config:
-        position: before      # before | after
-        totalMaxChars: 8000
+      config: {}            # 默认不限；单槽 maxChars 仍然生效
 ```
 
 也可以做成 bundle 包进 `package.json` 的 `dsh.profile.bundles`，本仓库自带
@@ -72,10 +71,23 @@ DSH 有四个能往模型可见历史里放文字的地方，缓存代价差一�
 
 | 字段 | 默认 | 含义 |
 |---|---|---|
-| `position` | `'before'` | 仅对 `'pre-step'` 通道有效：`before` 放在本轮用户输入之前（OpenClaw prependContext 语义）；`after` 放在所有已有消息之后 |
-| `totalMaxChars` | `8000` | 一次注入合并后的总字符上限（两条通道各自独立计） |
+| `totalMaxChars` | *(不填 —— 不限制)* | 可选的单次注入总字符上限，**按位置分别计**（前注入与后注入不共享这份预算）。不写这个键，或在设置页清空输入框，就是不限总量 |
 
-`runtime-context` 快照永远不会被挤走：`before` 时插槽落在第一个**非** runtime-context 消息之前，保持循环对它位置的预期。
+**「不限」是默认值，也是一个真实状态，不是幻数。** 这个键故意没有 schema
+默认值：设置页只能 `set` 一个值或 `unset` 这个键，如果给了数字默认值，「不限」
+就永远存不下去。键不存在 = 不限；一旦写了值就必须是正整数 —— `0` 和负数会被
+拒绝，而不是被悄悄当成「不限」，免得一个手误把本来设好的上限抹掉。单槽
+`maxChars` 两种情况都照样生效。
+
+已经没有 `position` 了。位置是内容自己的属性、不是进程的属性，所以由投稿方在注册时决定：
+
+| 方法 | `placement` | 落地 |
+|---|---|---|
+| `registerBefore(slot)` | `'before'` | 紧贴本轮用户输入之前（OpenClaw prependContext 语义） |
+| `registerAfter(slot)` | `'after'` | 所有已有消息之后（与 time-context、agentmemory 一致） |
+| `register(slot)` | 槽位自己的 `placement`，默认 `'before'` | 0.2.0 消费方的兼容入口 |
+
+`runtime-context` 快照永远不会被挤走：前注入落在第一个**非** runtime-context 消息之前，保持循环对它位置的预期。
 
 ### slot 字段
 
@@ -84,9 +96,10 @@ DSH 有四个能往模型可见历史里放文字的地方，缓存代价差一�
 | `id` | 必填 | 全局唯一；重复注册抛错，不静默覆盖 |
 | `render` | 必填 | 返回字符串；`null`/`undefined`/空串 = 本轮不注入。可以是 async |
 | `channel` | `'pre-step'` | `'pre-step'` 写历史 / `'request'` 只发模型 |
+| `placement` | `'before'` | `'before'` 用户提问之前 / `'after'` 一切之后。`registerBefore`/`registerAfter` 会强制它，在那里又声明相反的 placement 直接抛错 |
 | `priority` | `100` | 越小越靠前 |
 | `when` | `'turn'` | `'turn'` 每轮第一步 / `'step'` 每个模型步骤。`'request'` 通道目前只在 `step === 1` 渲染 |
-| `maxChars` | `4000` | 单槽上限，超出截断并加标记 |
+| `maxChars` | `4000` | 单槽上限，超出截断并加标记。总预算不限时它照样生效 |
 | `timeoutMs` | `1500` | 渲染超时，超时该槽跳过 |
 
 
@@ -97,7 +110,7 @@ const name = 'my-plugin'
 const inject = ['promptInject']   // 依赖插槽服务，等它就绪
 
 function apply(ctx) {
-  ctx.effect(() => ctx.promptInject.register({
+  ctx.effect(() => ctx.promptInject.registerBefore({
     id: 'my-plugin:status',        // 全局唯一；重复注册会抛错，不静默覆盖
     channel: 'pre-step',           // 'pre-step' 进历史 | 'request' 只发模型
     priority: 100,                 // 越小越靠前
@@ -129,7 +142,7 @@ render 返回**每轮都变**的内容是安全的（纯 append）。但请不�
 ## 验证
 
 ```powershell
-# 单元测试（假 ctx，34 项）
+# 单元测试（假 ctx，47 项）
 node --test test\index.test.js
 
 # 真实 Cordis 内核集成测试
@@ -152,7 +165,7 @@ node test\integration.mjs
 - **只在 `agent/pre-step` 出手**，不做工具后注入。需要「工具执行完再补一句」的场景请用 `post-execute` 的 `additionalContexts`，本插件不覆盖。
 - **去重按「轮次 + 正文」**：同一轮里正文变了就再注入一条，这是刻意的（内容不同就是新信息）。仅 `'pre-step'` 通道有去重；`'request'` 通道不落盘，无从比对。
 - **不压缩旧注入**：注入的历史消息和普通消息一样靠 compaction 遮蔽，插件不额外清理。
-- **`position: 'before'` 假设本轮至少有一条非 runtime-context 消息**；全空时不注入（空首步会被循环判成轮次结束，注入会导致空转）。
+- **前注入假设本轮至少有一条非 runtime-context 消息**；全空时不注入（空首步会被循环判成轮次结束，注入会导致空转）。
 - **`'request'` 通道依赖目标消息形状**：它找最后一条 `role === 'user'` 且非 `runtime-context` 的消息作为插入锚点。找不到就退化为追加到末尾。
 - 本插件不校验 `slot.render` 的返回值类型以外的语义，内容责任在投稿方。
 

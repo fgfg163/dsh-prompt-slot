@@ -5,6 +5,121 @@ All notable changes to `@fgfg163/dsh-prompt-slot` are recorded here.
 
 ---
 
+# 0.3.1
+
+## English
+
+**Changed**
+
+- **The per-turn total budget is unlimited by default.** `totalMaxChars` no
+  longer has a schema default and is absent from the shipped patch, so a fresh
+  install imposes no total ceiling — only each slot's own `maxChars` applies.
+  The settings field is now a free-text box that may be left empty; clearing it
+  writes an `unset` op, which removes the key and restores "unlimited".
+  "Unlimited" is a real state rather than a magic number, because the form can
+  only `set` a value or `unset` the key — a numeric default would make it
+  impossible to save.
+
+**Fixed**
+
+- `totalMaxChars: 0` (and negatives, and non-integers) are rejected with a
+  clear message instead of being read as "no ceiling". A real 0 would otherwise
+  silently drop every slot, and a typo must never remove a ceiling someone set
+  on purpose.
+
+## 中文
+
+**变更**
+
+- **单轮总预算默认不限制。** `totalMaxChars` 不再有 schema 默认值，出厂 patch
+  里也不写这个键，所以新装即无总量上限 —— 只有单槽自己的 `maxChars` 生效。
+  设置页改成可留空的文本框，清空即写入 `unset`，把键删掉、恢复「不限」。
+  「不限」是真实状态而不是幻数：设置页只能 `set` 值或 `unset` 键，给数字默认
+  值会让「不限」根本存不下去。
+
+**修复**
+
+- `totalMaxChars: 0`（以及负数、非整数）现在直接报错，不再被当成「不限」。
+  真正的 0 会让所有槽位都被淘汰，手误也不该抹掉别人特意设的上限。
+
+---
+
+# 0.3.0
+
+## English
+
+**Added**
+
+- **Two registration methods replace the global placement switch.**
+  `ctx.promptInject.registerBefore(slot)` puts the block ahead of this turn's
+  user prompt; `ctx.promptInject.registerAfter(slot)` appends it behind every
+  existing message. Placement is a property of the content, so it now belongs
+  to whoever registers the slot rather than to one process-wide setting that
+  unrelated consumers had to fight over.
+- Each placement is joined into its own message and measured against its own
+  `totalMaxChars` budget, so "before" can never starve "after".
+- Deduplication is tracked per placement on the same session projection row, so
+  one turn can carry a before block and an after block independently.
+
+**Changed**
+
+- `register(slot)` is now the compatibility entry point: it honours the slot's
+  own `placement` field (default `'before'`), so 0.2.0 consumers keep working
+  unchanged.
+- The projection row moved to `stateVersion: 2` (`{ turn, before, after }`).
+  `dsh-session-projection` drops a version-mismatched row and refolds the log
+  from seq 0, and `foldInjected` reads a placement-less (pre-0.3.0) message as a
+  "before" body — so an in-place upgrade rebuilds its dedup baseline instead of
+  losing it. `injectedStateSchema` additionally accepts the v1 shape for direct
+  callers.
+- `list()` descriptors now include `placement` and are sorted by placement then
+  priority.
+- The settings page edits only `totalMaxChars`; the placement dropdown is gone.
+
+**Removed**
+
+- **`position`** from `Config` and from `cordis.patch.yml`. A leftover
+  `position:` key in a hand-written patch is ignored rather than fatal.
+
+**Fixed**
+
+- The request channel's splice now uses the joined block's `body` field (it
+  read `.text` and injected an empty string).
+
+## 中文
+
+**新增**
+
+- **用两个注册方法取代全局位置开关。**
+  `ctx.promptInject.registerBefore(slot)` 把块放在本轮用户提问之前；
+  `ctx.promptInject.registerAfter(slot)` 追加到所有已有消息之后。位置是内容自己的
+  属性，所以改由投稿方决定，而不是一个让互不相关的消费方互相抢的进程级开关。
+- 每个位置各自合成一条消息、各自对照自己的 `totalMaxChars` 预算，前注入不会饿死后注入。
+- 去重按位置分别记录在同一条 projection 上，一轮可以同时带前块和后块。
+
+**变更**
+
+- `register(slot)` 退化为兼容入口：读槽位自己的 `placement`（默认 `'before'`），
+  0.2.0 的消费方无需改动。
+- projection 行升到 `stateVersion: 2`（`{ turn, before, after }`）。
+  `dsh-session-projection` 会把版本不匹配的行丢掉并从 seq 0 重折日志，而
+  `foldInjected` 把没有 placement 的旧消息（0.3.0 之前）当作前注入正文 ——
+  所以原地升级是**重建**去重基线，不是丢掉它。`injectedStateSchema` 另外也接受
+  v1 形状，供直接调用方使用。
+- `list()` 的描述符新增 `placement`，排序规则改为先位置后优先级。
+- 配置页只编辑 `totalMaxChars`，位置下拉框已删除。
+
+**移除**
+
+- `Config` 与 `cordis.patch.yml` 里的 **`position`**。手写 patch 里残留的
+  `position:` 会被忽略，不会报错。
+
+**修复**
+
+- request 通道拼接改用块的 `body` 字段（原先读 `.text`，注入的是空串）。
+
+---
+
 # 0.2.0
 
 ## English

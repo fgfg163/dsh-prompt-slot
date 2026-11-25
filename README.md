@@ -29,7 +29,8 @@ That gap is what this plugin fills.
 
 - Provides the `ctx.promptInject` service; any plugin can register a slot
 - **Two channels**: `channel: 'pre-step'` appends to session history (the default); `channel: 'request'` only reaches the outbound provider request and is **never written to the log**
-- On the first step of every turn, joins all registered slots into **one** user message
+- **Two placements, picked at registration**: `registerBefore()` puts the block ahead of this turn's user prompt, `registerAfter()` puts it behind everything else. Each placement gets its own message and its own budget
+- On the first step of every turn, joins all slots of one placement into **one** user message (so a turn can carry at most two injected messages, one per placement)
 - Compares against a persisted session projection, so **the same content is not injected twice in a turn** (survives session restore)
 - Hard budgets: a per-slot cap plus a total cap; overflow is evicted by priority
 - Rendering has a timeout, a broken slot is skipped and logged, and **a turn can never be stalled by a slot**
@@ -60,9 +61,7 @@ the loader):
 - insert:
     - id: fgfg163-prompt-slot
       name: '@fgfg163/dsh-prompt-slot'
-      config:
-        position: before      # before | after
-        totalMaxChars: 8000
+      config: {}            # no total ceiling by default; per-slot maxChars still applies
 ```
 
 It can also be installed as a bundle and listed in `package.json`'s
@@ -73,10 +72,28 @@ route.
 
 | Key | Default | Meaning |
 |---|---|---|
-| `position` | `'before'` | Only affects the `'pre-step'` channel: `before` places the block ahead of this turn's user input (OpenClaw `prependContext` semantics); `after` appends it behind all existing messages |
-| `totalMaxChars` | `8000` | Character ceiling for the joined body of one injection (counted separately per channel) |
+| `totalMaxChars` | *(unset — unlimited)* | Optional character ceiling for the joined body of one injection, counted **separately per placement** (before and after do not share a budget). Leave it out, or clear the field in Settings, for no total limit |
 
-The `runtime-context` snapshot is never displaced: with `before`, the slot lands ahead of the first **non**-runtime-context message, preserving the position the loop expects it in.
+**Unlimited is the default and is a real state, not a magic number.** The key
+has no schema default on purpose: the settings form can only `set` a value or
+`unset` the key, so a numeric default would make "no ceiling" impossible to
+save. An absent key means "unlimited"; a *present* value must be a positive
+integer — `0` and negatives are rejected rather than quietly reinterpreted as
+"unlimited", so a typo can never silently remove a ceiling someone meant to
+set. Per-slot `maxChars` applies either way.
+
+There is no `position` key any more. Placement is a property of the content, not
+of the process, so it is decided by whoever registers the slot:
+
+| Method | `placement` | Lands |
+|---|---|---|
+| `registerBefore(slot)` | `'before'` | Immediately ahead of this turn's first non-runtime-context message (OpenClaw `prependContext` semantics) |
+| `registerAfter(slot)` | `'after'` | Behind every existing message (matches time-context and agentmemory) |
+| `register(slot)` | the slot's own `placement`, default `'before'` | Compatibility entry point for 0.2.0 consumers |
+
+The `runtime-context` snapshot is never displaced: a `'before'` block lands
+ahead of the first **non**-runtime-context message, preserving the position the
+loop expects it in.
 
 ### Slot fields
 
@@ -85,9 +102,10 @@ The `runtime-context` snapshot is never displaced: with `before`, the slot lands
 | `id` | required | Globally unique; a duplicate registration throws rather than silently shadowing |
 | `render` | required | Returns a string; `null`/`undefined`/empty means "nothing this turn". May be async |
 | `channel` | `'pre-step'` | `'pre-step'` writes history / `'request'` reaches the model only |
+| `placement` | `'before'` | `'before'` ahead of the user prompt / `'after'` behind everything. `registerBefore`/`registerAfter` force it; naming a different one there is an error |
 | `priority` | `100` | Lower sorts earlier |
 | `when` | `'turn'` | `'turn'` = first step of each turn / `'step'` = every model step. The `'request'` channel currently renders only at `step === 1` |
-| `maxChars` | `4000` | Per-slot cap; overflow is truncated with a visible marker |
+| `maxChars` | `4000` | Per-slot cap; overflow is truncated with a visible marker. This still applies when the total budget is unlimited |
 | `timeoutMs` | `1500` | Render timeout; a slot that times out is skipped |
 
 ## Using it (how another plugin contributes)
@@ -97,7 +115,7 @@ const name = 'my-plugin'
 const inject = ['promptInject']   // depend on the slot service, wait for it
 
 function apply(ctx) {
-  ctx.effect(() => ctx.promptInject.register({
+  ctx.effect(() => ctx.promptInject.registerBefore({
     id: 'my-plugin:status',        // globally unique; duplicates throw, never shadow
     channel: 'pre-step',           // 'pre-step' writes history | 'request' model only
     priority: 100,                 // lower sorts earlier
@@ -129,7 +147,7 @@ Returning content that **changes every turn** is safe (pure append). Do not put 
 ## Testing
 
 ```powershell
-# Unit tests (fake ctx, 34 cases)
+# Unit tests (fake ctx, 47 cases)
 node --test test\index.test.js
 
 # Integration test against a real Cordis kernel
@@ -148,7 +166,7 @@ The integration test runs a real `@deepseek-ai/cordis` through `ctx.plugin()` + 
 - **It only acts on `agent/pre-step`**, with no post-tool injection. If you need "add a line after a tool finishes", use `post-execute`'s `additionalContexts`; this plugin does not cover that.
 - **Deduplication is keyed on "turn + body"**: if the body changes within the same turn it is injected again, which is deliberate (different content is new information). Only the `'pre-step'` channel deduplicates; the `'request'` channel never lands on disk, so there is nothing to compare against.
 - **Old injections are not compacted**: injected history messages are shadowed by compaction like any other message; the plugin does no extra cleanup.
-- **`position: 'before'` assumes at least one non-runtime-context message this turn**; when there is none it injects nothing (an empty first step is treated by the loop as end-of-turn, and injecting would spin).
+- **A `'before'` block assumes at least one non-runtime-context message this turn**; when there is none it injects nothing (an empty first step is treated by the loop as end-of-turn, and injecting would spin).
 - **The `'request'` channel depends on the target message shape**: it looks for the last `role === 'user'` message that is not `runtime-context` as the insertion anchor, falling back to appending at the end.
 - The plugin validates nothing beyond the return type of `slot.render`; content is the contributing plugin's responsibility.
 
